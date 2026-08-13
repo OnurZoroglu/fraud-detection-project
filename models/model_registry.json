@@ -1,0 +1,53 @@
+{
+  "active_version": "2.0.0",
+  "models": [
+    {
+      "version": "1.0.0",
+      "name": "Logistic Regression Baseline",
+      "file_path": null,
+      "feature_set": "base",
+      "training_date": "2026-08-01",
+      "metrics": {
+        "pr_auc": 0.266,
+        "roc_auc": 0.837
+      },
+      "notes": "Linear baseline, balanced via class_weight='balanced'."
+    },
+    {
+      "version": "2.0.0",
+      "name": "XGBoost Baseline",
+      "file_path": "models/xgboost_baseline_model.pkl",
+      "feature_set": "base",
+      "training_date": "2026-08-01",
+      "metrics": {
+        "pr_auc": 0.501,
+        "roc_auc": 0.83
+      },
+      "notes": "Balanced via scale_pos_weight, base feature set (amount, SQL features, V1-V28)."
+    },
+    {
+      "version": "3.0.0",
+      "name": "XGBoost + Graph Features (Final)",
+      "file_path": "models/xgboost_final_model.pkl",
+      "feature_set": "base + graph",
+      "training_date": "2026-08-03",
+      "metrics": {
+        "pr_auc": 0.795,
+        "roc_auc": 0.935
+      },
+      "notes": "Adds degree_centrality and community_size graph features. Highest PR-AUC of any model, but not used in production: graph features require a full recomputation of the card-merchant network and are impractical to compute per-request. The baseline (2.0.0) is served instead."
+    },
+    {
+      "version": "3.1.0-experimental",
+      "name": "Ensemble (XGBoost + Autoencoder)",
+      "file_path": null,
+      "feature_set": "base + graph",
+      "training_date": "2026-08-04",
+      "metrics": {
+        "pr_auc": 0.794,
+        "roc_auc": 0.939
+      },
+      "notes": "Adding the autoencoder did not improve PR-AUC (see Week 5 analysis). Not promoted to production."
+    }
+  ]
+}
