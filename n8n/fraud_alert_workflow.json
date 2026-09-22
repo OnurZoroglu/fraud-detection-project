@@ -1,0 +1,127 @@
+{
+  "name": "Fraud Alert - FastAPI Integration",
+  "nodes": [
+    {
+      "id": "a1f0c3e2-0001-4b1e-9c11-000000000001",
+      "name": "Webhook",
+      "webhookId": "6c1e2f8a-3b4d-4e5f-9a0b-1c2d3e4f5a6b",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        0,
+        0
+      ],
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "fraud-alert",
+        "options": {}
+      }
+    },
+    {
+      "id": "a1f0c3e2-0002-4b1e-9c11-000000000002",
+      "name": "Is Fraud?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        240,
+        0
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "version": 2,
+            "leftValue": "",
+            "caseSensitive": true,
+            "typeValidation": "strict"
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "f7a1b2c3-d4e5-4f60-8a9b-0c1d2e3f4a5b",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              },
+              "leftValue": "={{ $json.body.is_fraud_alert }}",
+              "rightValue": ""
+            }
+          ]
+        },
+        "looseTypeValidation": false,
+        "options": {}
+      }
+    },
+    {
+      "id": "a1f0c3e2-0003-4b1e-9c11-000000000003",
+      "name": "Send Telegram Alert",
+      "webhookId": "9e2baa1d-0fa2-4028-b2fe-5dc51f826d90",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        480,
+        -96
+      ],
+      "parameters": {
+        "chatId": "YOUR_TELEGRAM_CHAT_ID",
+        "text": "=🚨 Fraud Alert! Transaction: {{ $json.body.transaction_id }} | Amount: ${{ $json.body.amount }} | Probability: {{ $json.body.fraud_probability }}",
+        "additionalFields": {
+          "appendAttribution": false
+        }
+      },
+      "credentials": {
+        "telegramApi": {
+          "id": "YOUR_TELEGRAM_CREDENTIAL_ID",
+          "name": "Telegram account"
+        }
+      }
+    },
+    {
+      "id": "a1f0c3e2-0004-4b1e-9c11-000000000004",
+      "name": "No Operation",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        480,
+        112
+      ],
+      "parameters": {}
+    }
+  ],
+  "connections": {
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "Is Fraud?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Is Fraud?": {
+      "main": [
+        [
+          {
+            "node": "Send Telegram Alert",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "No Operation",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {},
+  "tags": []
+}
