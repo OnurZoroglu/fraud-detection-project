@@ -4,7 +4,8 @@ An end-to-end fraud detection system built on the [Kaggle Credit Card Fraud
 Detection dataset](https://www.kaggle.com/mlg-ulb/creditcardfraud). The project
 combines SQL-based feature engineering, classical ML with imbalance handling,
 unsupervised anomaly detection, graph-based fraud ring detection, a served
-REST API with drift monitoring, and an interactive dashboard.
+REST API with drift monitoring, real-time Telegram fraud alerts via an n8n
+workflow, and an interactive dashboard.
 
 **This is a portfolio / learning project, not a production banking system.**
 Several design decisions reflect that scope explicitly — see
@@ -57,6 +58,10 @@ fraud-detection-project/
 ├── data/                                # generated CSVs and plots (gitignored)
 ├── models/                              # trained model artifacts (gitignored)
 ├── logs/                                # prediction logs (gitignored)
+├── n8n/
+│   └── fraud_alert_workflow.json       # importable n8n alert workflow
+├── docs/
+│   └── telegram_alert.png              # example Telegram fraud alert
 ├── requirements.txt
 ├── docker-compose.yml
 └── .gitignore
@@ -359,6 +364,55 @@ distinct. This didn't invalidate the drift conclusion (the underlying
 distribution sampled was still representative), but it did mean the
 "sample size" was smaller than the record count suggested. The script has
 since been fixed to sample without a fixed seed on each run.
+
+### 13. Real-Time Alerting with n8n
+
+The served model (v2.0.0) is connected to a self-hosted [n8n](https://n8n.io) workflow that turns fraud predictions into instant Telegram notifications. This closes the loop between scoring a transaction and a human actually seeing the alert.
+
+```mermaid
+flowchart LR
+    A[Client] -->|POST /predict| B[FastAPI<br/>XGBoost v2.0.0]
+    B -->|200 response| A
+    B -.->|BackgroundTasks<br/>POST webhook| C[n8n Webhook]
+    C --> D{is_fraud_alert<br/>=== true?}
+    D -->|true| E[Telegram alert]
+    D -->|false| F[No operation]
+```
+
+After each prediction, `/predict` sends `transaction_id`, `amount`, `fraud_probability` and `is_fraud_alert` to the URL in `N8N_WEBHOOK_URL`. The call runs in FastAPI `BackgroundTasks`, so the API response is not delayed (35–97 ms in local tests).
+
+![Telegram fraud alert](docs/telegram_alert.png)
+
+**Design decisions**
+
+- **Single source of truth for the threshold.** The alert threshold lives only in the API (`ALERT_THRESHOLD = 0.10`, taken from the cost-sensitive analysis in section 3). n8n does not apply its own cutoff; it only routes on the API's `is_fraud_alert` decision. An earlier version used a separate 0.5 cutoff in n8n, which meant transactions the API flagged between 0.10 and 0.5 never reached Telegram.
+- **Alerting never breaks scoring.** If n8n is unreachable, `/predict` still returns 200 and the failure is logged as a warning. If `N8N_WEBHOOK_URL` is unset, no webhook call is made at all.
+- **Missing data fails loudly.** n8n's IF node uses a strict boolean check, so a payload without `is_fraud_alert` raises a type error instead of being silently treated as non-fraud.
+
+**End-to-end test results** (real rows from the test split)
+
+| Transaction | Probability | `is_fraud_alert` | Route |
+| --- | --- | --- | --- |
+| Fraud row | 1.00 | true | Telegram alert |
+| Legitimate row, mid-range score | 0.30 | true | Telegram alert (missed under the old 0.5 cutoff) |
+| Legitimate row | 0.00 | false | No operation |
+| Any request, n8n stopped | — | — | API returned 200, warning logged |
+
+Test predictions were removed from `logs/prediction_log.jsonl` afterwards so they would not affect drift monitoring (see the note on manual test entries in section 12).
+
+**Setup**
+
+1. Run n8n locally:
+   ```
+   docker run -d --name n8n --restart unless-stopped -p 5678:5678 -v n8n_data:/home/node/.n8n docker.n8n.io/n8nio/n8n
+   ```
+2. In n8n, import `n8n/fraud_alert_workflow.json`, select your Telegram credential (bot token from @BotFather) and enter your chat ID in the Telegram node, then publish the workflow.
+3. Add the webhook URL to `.env`:
+   ```
+   N8N_WEBHOOK_URL=http://localhost:5678/webhook/fraud-alert
+   ```
+   If the API runs inside Docker, use `http://host.docker.internal:5678/webhook/fraud-alert` instead.
+4. Start the API as usual. High-risk predictions now arrive in Telegram.
 
 ## Model Comparison Summary
 
