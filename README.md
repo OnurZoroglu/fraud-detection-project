@@ -60,8 +60,6 @@ fraud-detection-project/
 ├── logs/                                # prediction logs (gitignored)
 ├── n8n/
 │   └── fraud_alert_workflow.json       # importable n8n alert workflow
-├── docs/
-│   └── telegram_alert.png              # example Telegram fraud alert
 ├── requirements.txt
 ├── docker-compose.yml
 └── .gitignore
@@ -381,22 +379,20 @@ flowchart LR
 
 After each prediction, `/predict` sends `transaction_id`, `amount`, `fraud_probability` and `is_fraud_alert` to the URL in `N8N_WEBHOOK_URL`. The call runs in FastAPI `BackgroundTasks`, so the API response is not delayed (35–97 ms in local tests).
 
-![Telegram fraud alert](docs/telegram_alert.png)
-
 **Design decisions**
 
 - **Single source of truth for the threshold.** The alert threshold lives only in the API (`ALERT_THRESHOLD = 0.10`, taken from the cost-sensitive analysis in section 3). n8n does not apply its own cutoff; it only routes on the API's `is_fraud_alert` decision. An earlier version used a separate 0.5 cutoff in n8n, which meant transactions the API flagged between 0.10 and 0.5 never reached Telegram.
 - **Alerting never breaks scoring.** If n8n is unreachable, `/predict` still returns 200 and the failure is logged as a warning. If `N8N_WEBHOOK_URL` is unset, no webhook call is made at all.
 - **Missing data fails loudly.** n8n's IF node uses a strict boolean check, so a payload without `is_fraud_alert` raises a type error instead of being silently treated as non-fraud.
 
-**End-to-end test results** (real rows from the test split)
+**End-to-end test results** (real rows from the test split, unseen during training; split rebuilt with the same `train_test_split(..., test_size=0.2, random_state=42, stratify=y)` as `train_with_graph_features.py`)
 
 | Transaction | Probability | `is_fraud_alert` | Route |
 | --- | --- | --- | --- |
-| Fraud row | 1.00 | true | Telegram alert |
-| Legitimate row, mid-range score | 0.30 | true | Telegram alert (missed under the old 0.5 cutoff) |
-| Legitimate row | 0.00 | false | No operation |
-| Any request, n8n stopped | — | — | API returned 200, warning logged |
+| Fraud row | 0.999 | true | Telegram alert |
+| Legitimate row, mid-range score | 0.29 | true | Telegram alert (missed under the old 0.5 cutoff) |
+| Legitimate row | 0.0005 | false | No operation |
+| Fraud row above, n8n stopped | 0.999 | true | API returned 200, warning logged |
 
 Test predictions were removed from `logs/prediction_log.jsonl` afterwards so they would not affect drift monitoring (see the note on manual test entries in section 12).
 
