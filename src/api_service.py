@@ -24,7 +24,7 @@ load_dotenv()
 
 REGISTRY_PATH = "models/model_registry.json"
 LOG_PATH = "logs/prediction_log.jsonl"
-ALERT_THRESHOLD = 0.10  # from the cost-sensitive threshold analysis, see README.md
+ALERT_THRESHOLD = 0.002  # cost-optimal at 100:1 FN:FP cost, see cost_analysis.py / README.md
 N8N_WEBHOOK_URL = os.getenv("N8N_WEBHOOK_URL")  # unset -> webhook notifications disabled
 # Explicit off switch (e.g. while populate_logs.py fills the logs). Needed because an
 # unset/empty N8N_WEBHOOK_URL is refilled from .env by load_dotenv().

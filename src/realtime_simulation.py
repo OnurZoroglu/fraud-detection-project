@@ -18,7 +18,7 @@ FEATURE_COLS_PATH = "models/baseline_feature_columns.pkl"
 
 SAMPLE_SEED = 7
 N_NORMAL_SAMPLES = 50
-ALERT_THRESHOLD = 0.10  # from the cost-sensitive threshold analysis, see README.md
+ALERT_THRESHOLD = 0.002  # cost-optimal at 100:1 FN:FP cost, see cost_analysis.py / README.md
 STREAM_DELAY_SECONDS = 0.1
 
 

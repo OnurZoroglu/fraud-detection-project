@@ -18,8 +18,8 @@ registry = {
             "name": "Logistic Regression Baseline",
             "file_path": None,  # not persisted, exploratory run only
             "feature_set": "base",
-            "training_date": "2026-08-01",
-            "metrics": {"pr_auc": 0.266, "roc_auc": 0.837},
+            "training_date": "2026-09-23",
+            "metrics": {"pr_auc": 0.720, "roc_auc": 0.972},
             "notes": "Linear baseline, balanced via class_weight='balanced'.",
         },
         {
@@ -27,8 +27,8 @@ registry = {
             "name": "XGBoost Baseline",
             "file_path": "models/xgboost_baseline_model.pkl",
             "feature_set": "base",
-            "training_date": "2026-08-01",
-            "metrics": {"pr_auc": 0.501, "roc_auc": 0.830},
+            "training_date": "2026-09-23",
+            "metrics": {"pr_auc": 0.876, "roc_auc": 0.975},
             "notes": "Balanced via scale_pos_weight, base feature set (amount, SQL features, V1-V28).",
         },
         {
@@ -36,8 +36,8 @@ registry = {
             "name": "XGBoost + Graph Features (Final)",
             "file_path": "models/xgboost_final_model.pkl",
             "feature_set": "base + graph",
-            "training_date": "2026-08-03",
-            "metrics": {"pr_auc": 0.795, "roc_auc": 0.935},
+            "training_date": "2026-09-23",
+            "metrics": {"pr_auc": 0.928, "roc_auc": 0.987},
             "notes": (
                 "Adds degree_centrality and community_size graph features. Highest PR-AUC of "
                 "any model, but not used in production: graph features require a full "
@@ -50,8 +50,8 @@ registry = {
             "name": "Ensemble (XGBoost + Autoencoder)",
             "file_path": None,  # reproduced from code, not persisted separately
             "feature_set": "base + graph",
-            "training_date": "2026-08-04",
-            "metrics": {"pr_auc": 0.794, "roc_auc": 0.939},
+            "training_date": "2026-09-23",
+            "metrics": {"pr_auc": 0.919, "roc_auc": 0.980},
             "notes": "Adding the autoencoder did not improve PR-AUC (see Week 5 analysis). Not promoted to production.",
         },
     ],
