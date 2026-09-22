@@ -12,7 +12,6 @@ README.md, "Graph-Based Fraud Ring Detection").
 
 import numpy as np
 import pandas as pd
-from data_prep import RAW_DATA_PATH
 
 FEATURES_PATH = "data/features.csv"
 OUTPUT_PATH = "data/features_with_graph_ids.csv"
@@ -29,17 +28,6 @@ N_RING_MERCHANTS = 10
 np.random.seed(RANDOM_SEED)
 
 df = pd.read_csv(FEATURES_PATH)
-raw = pd.read_csv(RAW_DATA_PATH)
-raw.columns = [c.lower() for c in raw.columns]
-raw = raw.rename(columns={"class": "is_fraud", "time": "time_seconds"})
-
-df = df.merge(
-    raw[["time_seconds", "is_fraud"]].reset_index().rename(columns={"index": "orig_idx"}),
-    on="time_seconds",
-    how="left",
-    suffixes=("", "_dup"),
-)
-df = df.drop_duplicates(subset="transaction_id")
 n = len(df)
 
 df["card_id"] = np.random.randint(0, N_CARDS, size=n).astype("int64")
