@@ -9,9 +9,12 @@ the served model was trained on, see data_prep.get_train_test_indices), so
 the logs reflect data the model has never seen. Each request carries a
 "POPULATE-<id>" transaction_id so these rows can be told apart in the log.
 
-Start the API *without* N8N_WEBHOOK_URL while running this script,
-otherwise every flagged transaction is also sent to the n8n fraud-alert
-workflow (and on to Telegram).
+Start the API with N8N_ALERTS_ENABLED=false while running this script,
+otherwise every prediction is also sent to the n8n fraud-alert workflow
+and flagged ones on to Telegram. (Unsetting N8N_WEBHOOK_URL is not enough:
+the API reloads it from .env.) For example, in PowerShell:
+
+    $env:N8N_ALERTS_ENABLED = "false"; uvicorn src.api_service:app
 """
 
 import os
@@ -40,9 +43,8 @@ def build_payload(row) -> dict:
 load_dotenv()
 if os.getenv("N8N_WEBHOOK_URL"):
     print(
-        "WARNING: N8N_WEBHOOK_URL is set in this environment/.env. If the API was started with it,\n"
-        "flagged transactions from this run will trigger n8n fraud alerts. Restart the API without it\n"
-        "to avoid that.\n"
+        "WARNING: N8N_WEBHOOK_URL is set in this environment/.env. Unless the API was started with\n"
+        "N8N_ALERTS_ENABLED=false, every request from this run is sent to n8n and flagged ones to Telegram.\n"
     )
 
 df, _ = load_dataset_with_graph_features()
