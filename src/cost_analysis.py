@@ -48,20 +48,22 @@ model = XGBClassifier(scale_pos_weight=scale_pos_weight, random_state=RANDOM_STA
 model.fit(X_train, y_train)
 y_proba = model.predict_proba(X_test)[:, 1]
 
-thresholds = np.arange(0.01, 1.0, 0.01)
+thresholds = np.round(np.arange(0.001, 1.0, 0.001), 3)  # fine grid: the optimum can sit well below 0.01
 total_costs = total_cost_by_threshold(y_test, y_proba, thresholds)
 
 optimal_idx = np.argmin(total_costs)
 optimal_threshold = thresholds[optimal_idx]
 default_idx = np.argmin(np.abs(thresholds - DEFAULT_THRESHOLD))
 
-print(f"Optimal threshold: {optimal_threshold:.2f}")
+print(f"Optimal threshold: {optimal_threshold:.3f}")
+if optimal_idx in (0, len(thresholds) - 1):
+    print("WARNING: optimum is at the edge of the search grid; the true optimum may lie outside it.")
 print(f"Total cost at optimal threshold: ${total_costs[optimal_idx]:,.0f}")
 print(f"Total cost at default threshold ({DEFAULT_THRESHOLD}): ${total_costs[default_idx]:,.0f}")
 
 plt.figure(figsize=(10, 6))
 plt.plot(thresholds, total_costs, color="darkred")
-plt.axvline(optimal_threshold, color="green", linestyle="--", label=f"Optimal threshold: {optimal_threshold:.2f}")
+plt.axvline(optimal_threshold, color="green", linestyle="--", label=f"Optimal threshold: {optimal_threshold:.3f}")
 plt.axvline(DEFAULT_THRESHOLD, color="gray", linestyle="--", label=f"Default threshold: {DEFAULT_THRESHOLD}")
 plt.xlabel("Decision threshold")
 plt.ylabel("Total cost ($)")
