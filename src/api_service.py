@@ -26,6 +26,9 @@ REGISTRY_PATH = "models/model_registry.json"
 LOG_PATH = "logs/prediction_log.jsonl"
 ALERT_THRESHOLD = 0.10  # from the cost-sensitive threshold analysis, see README.md
 N8N_WEBHOOK_URL = os.getenv("N8N_WEBHOOK_URL")  # unset -> webhook notifications disabled
+# Explicit off switch (e.g. while populate_logs.py fills the logs). Needed because an
+# unset/empty N8N_WEBHOOK_URL is refilled from .env by load_dotenv().
+N8N_ALERTS_ENABLED = os.getenv("N8N_ALERTS_ENABLED", "true").strip().lower() not in ("false", "0", "no", "off")
 N8N_TIMEOUT_SECONDS = 5
 
 logger = logging.getLogger("uvicorn.error")
@@ -130,7 +133,7 @@ def predict_fraud(transaction: TransactionInput, background_tasks: BackgroundTas
         }
 
         log_prediction(row, result)
-        if N8N_WEBHOOK_URL:
+        if N8N_ALERTS_ENABLED and N8N_WEBHOOK_URL:
             background_tasks.add_task(
                 notify_n8n,
                 {
