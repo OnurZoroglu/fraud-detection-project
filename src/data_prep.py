@@ -2,9 +2,13 @@
 
 import numpy as np
 import pandas as pd
+from sklearn.model_selection import train_test_split
 
 FEATURES_PATH = "data/features.csv"
 RAW_DATA_PATH = "data/creditcard.csv"
+
+SPLIT_RANDOM_STATE = 42
+SPLIT_TEST_SIZE = 0.2
 
 
 def load_raw(raw_path: str = RAW_DATA_PATH):
@@ -61,6 +65,17 @@ def load_dataset(features_path: str = FEATURES_PATH, raw_path: str = RAW_DATA_PA
     df = pd.read_csv(features_path)
     df["time_since_last_txn"] = df["time_since_last_txn"].fillna(0)
     return attach_pca_components(df, raw_path)
+
+
+def get_train_test_indices(df: pd.DataFrame):
+    """Return (train_idx, test_idx) for the stratified split the served models were trained on.
+
+    Shared by train_with_graph_features.py, realtime_simulation.py and populate_logs.py
+    so that "test data" means the same rows everywhere.
+    """
+    return train_test_split(
+        df.index, test_size=SPLIT_TEST_SIZE, random_state=SPLIT_RANDOM_STATE, stratify=df["is_fraud"]
+    )
 
 
 def get_base_feature_cols(v_columns: list[str]) -> list[str]:

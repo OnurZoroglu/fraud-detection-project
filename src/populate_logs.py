@@ -3,11 +3,23 @@
 Used to build a large enough sample for drift_monitor.py to produce a
 statistically meaningful result. Requires the API service (api_service.py)
 to be running.
+
+Transactions are drawn only from the held-out test split (the same split
+the served model was trained on, see data_prep.get_train_test_indices), so
+the logs reflect data the model has never seen. Each request carries a
+"POPULATE-<id>" transaction_id so these rows can be told apart in the log.
+
+Start the API *without* N8N_WEBHOOK_URL while running this script,
+otherwise every flagged transaction is also sent to the n8n fraud-alert
+workflow (and on to Telegram).
 """
 
-import requests
+import os
 
-from data_prep import load_dataset_with_graph_features
+import requests
+from dotenv import load_dotenv
+
+from data_prep import get_train_test_indices, load_dataset_with_graph_features
 
 API_URL = "http://127.0.0.1:8000/predict"
 SAMPLE_SIZE = 300
@@ -16,6 +28,7 @@ PROGRESS_INTERVAL = 50
 
 def build_payload(row) -> dict:
     return {
+        "transaction_id": f"POPULATE-{int(row['transaction_id'])}",
         "amount": float(row["amount"]),
         "txn_count_last_hour": int(row["txn_count_last_hour"]),
         "avg_amount_last_hour": float(row["avg_amount_last_hour"]),
@@ -24,10 +37,19 @@ def build_payload(row) -> dict:
     }
 
 
-df, _ = load_dataset_with_graph_features()
-sample = df.sample(SAMPLE_SIZE)  # no fixed seed: repeated runs should draw different transactions
+load_dotenv()
+if os.getenv("N8N_WEBHOOK_URL"):
+    print(
+        "WARNING: N8N_WEBHOOK_URL is set in this environment/.env. If the API was started with it,\n"
+        "flagged transactions from this run will trigger n8n fraud alerts. Restart the API without it\n"
+        "to avoid that.\n"
+    )
 
-print(f"Sending {len(sample)} transactions to the API...\n")
+df, _ = load_dataset_with_graph_features()
+_, test_idx = get_train_test_indices(df)
+sample = df.loc[test_idx].sample(SAMPLE_SIZE)  # no fixed seed: repeated runs should draw different transactions
+
+print(f"Sending {len(sample)} test-split transactions to the API...\n")
 
 success_count = 0
 error_count = 0
