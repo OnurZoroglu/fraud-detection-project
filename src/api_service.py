@@ -137,6 +137,7 @@ def predict_fraud(transaction: TransactionInput, background_tasks: BackgroundTas
                     "transaction_id": transaction_id,
                     "amount": transaction.amount,
                     "fraud_probability": result["fraud_probability"],
+                    "is_fraud_alert": result["is_fraud_alert"],
                 },
             )
         return result
