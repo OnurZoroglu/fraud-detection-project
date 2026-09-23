@@ -1,9 +1,59 @@
 """Shared data loading utilities used across the project's training and analysis scripts."""
 
+import numpy as np
 import pandas as pd
+from sklearn.model_selection import train_test_split
 
 FEATURES_PATH = "data/features.csv"
 RAW_DATA_PATH = "data/creditcard.csv"
+
+SPLIT_RANDOM_STATE = 42
+SPLIT_TEST_SIZE = 0.2
+
+
+def load_raw(raw_path: str = RAW_DATA_PATH):
+    """Load the raw Kaggle CSV with the same normalization and transaction_id as load_data.py.
+
+    transaction_id is the 1-based row number in the raw file. load_data.py assigns it
+    the same way before loading into PostgreSQL, and the SQL feature query passes it
+    through unchanged, so it is the key that links data/features.csv back to the raw
+    row. (time_seconds is not a valid key: most timestamps are shared by several
+    transactions.)
+
+    Returns:
+        A tuple of (raw dataframe, list of PCA column names).
+    """
+    raw = pd.read_csv(raw_path)
+    raw.columns = [c.lower() for c in raw.columns]
+    raw = raw.rename(columns={"class": "is_fraud", "time": "time_seconds"})
+    raw.insert(0, "transaction_id", range(1, len(raw) + 1))
+    v_columns = [c for c in raw.columns if c.startswith("v")]
+    return raw, v_columns
+
+
+def check_alignment(df: pd.DataFrame, raw: pd.DataFrame, v_columns: list[str]) -> None:
+    """Raise if any row's features and PCA components don't come from the same raw transaction."""
+    if len(df) != len(raw):
+        raise ValueError(f"Alignment check failed: expected {len(raw)} rows, got {len(df)}")
+
+    ref = raw.set_index("transaction_id").loc[df["transaction_id"]]
+    problems = {
+        "missing PCA components": int(df[v_columns].isna().any(axis=1).sum()),
+        "amount mismatch": int((~np.isclose(df["amount"].to_numpy(), ref["amount"].to_numpy())).sum()),
+        "time mismatch": int((df["time_seconds"].to_numpy() != ref["time_seconds"].to_numpy()).sum()),
+        "label mismatch": int((df["is_fraud"].to_numpy() != ref["is_fraud"].to_numpy()).sum()),
+    }
+    failed = {name: count for name, count in problems.items() if count}
+    if failed:
+        raise ValueError(f"Alignment check failed (rows affected): {failed}")
+
+
+def attach_pca_components(df: pd.DataFrame, raw_path: str = RAW_DATA_PATH):
+    """Join v1..v28 from the raw CSV onto df by transaction_id and verify the alignment."""
+    raw, v_columns = load_raw(raw_path)
+    df = df.merge(raw[["transaction_id"] + v_columns], on="transaction_id", how="left", validate="one_to_one")
+    check_alignment(df, raw, v_columns)
+    return df, v_columns
 
 
 def load_dataset(features_path: str = FEATURES_PATH, raw_path: str = RAW_DATA_PATH):
@@ -14,18 +64,18 @@ def load_dataset(features_path: str = FEATURES_PATH, raw_path: str = RAW_DATA_PA
     """
     df = pd.read_csv(features_path)
     df["time_since_last_txn"] = df["time_since_last_txn"].fillna(0)
+    return attach_pca_components(df, raw_path)
 
-    raw = pd.read_csv(raw_path)
-    raw.columns = [c.lower() for c in raw.columns]
-    raw = raw.rename(columns={"class": "is_fraud", "time": "time_seconds"})
-    v_columns = [c for c in raw.columns if c.startswith("v")]
 
-    df = df.merge(
-        raw[["time_seconds"] + v_columns].reset_index().rename(columns={"index": "orig_idx"}),
-        on="time_seconds",
-        how="left",
+def get_train_test_indices(df: pd.DataFrame):
+    """Return (train_idx, test_idx) for the stratified split the served models were trained on.
+
+    Shared by train_with_graph_features.py, realtime_simulation.py and populate_logs.py
+    so that "test data" means the same rows everywhere.
+    """
+    return train_test_split(
+        df.index, test_size=SPLIT_TEST_SIZE, random_state=SPLIT_RANDOM_STATE, stratify=df["is_fraud"]
     )
-    return df.drop_duplicates(subset="transaction_id"), v_columns
 
 
 def get_base_feature_cols(v_columns: list[str]) -> list[str]:
@@ -41,19 +91,7 @@ def load_dataset_with_graph_features(graph_features_path: str = "data/graph_feat
     """
     df = pd.read_csv("data/features_with_graph_ids.csv")
     df["time_since_last_txn"] = df["time_since_last_txn"].fillna(0)
-
-    raw = pd.read_csv(RAW_DATA_PATH)
-    raw.columns = [c.lower() for c in raw.columns]
-    raw = raw.rename(columns={"class": "is_fraud", "time": "time_seconds"})
-    v_columns = [c for c in raw.columns if c.startswith("v")]
-
-    df = df.merge(
-        raw[["time_seconds"] + v_columns].reset_index().rename(columns={"index": "orig_idx"}),
-        on="time_seconds",
-        how="left",
-        suffixes=("", "_orig"),
-    )
-    df = df.drop_duplicates(subset="transaction_id")
+    df, v_columns = attach_pca_components(df)
 
     graph_features = pd.read_csv(graph_features_path)
     df = df.merge(graph_features, on="card_id", how="left")

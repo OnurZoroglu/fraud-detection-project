@@ -11,23 +11,20 @@ import time
 from datetime import datetime
 import joblib
 import pandas as pd
-from sklearn.model_selection import train_test_split
-from data_prep import get_graph_feature_cols, load_dataset_with_graph_features
+from data_prep import get_train_test_indices, load_dataset_with_graph_features
 
 MODEL_PATH = "models/xgboost_baseline_model.pkl"
 FEATURE_COLS_PATH = "models/baseline_feature_columns.pkl"
 
-RANDOM_STATE = 42  # must match the split used in train_with_graph_features.py
-TEST_SIZE = 0.2
 SAMPLE_SEED = 7
 N_NORMAL_SAMPLES = 50
-ALERT_THRESHOLD = 0.10  # from the cost-sensitive threshold analysis, see README.md
+ALERT_THRESHOLD = 0.015  # cost-optimal on out-of-fold training predictions (100:1 FN:FP), see cost_analysis.py
 STREAM_DELAY_SECONDS = 0.1
 
 
 def build_stream_sample(df):
     """Reproduce the training split and sample from the test set only."""
-    _, test_idx = train_test_split(df.index, test_size=TEST_SIZE, random_state=RANDOM_STATE, stratify=df["is_fraud"])
+    _, test_idx = get_train_test_indices(df)
     test_df = df.loc[test_idx]
     print(f"Test set size: {len(test_df)}")
     print(f"Test set fraud count: {test_df['is_fraud'].sum()}\n")

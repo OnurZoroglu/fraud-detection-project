@@ -11,12 +11,15 @@ Features on Model Performance" and "Model Versioning") for why.
 import os
 import joblib
 from sklearn.metrics import average_precision_score, classification_report, roc_auc_score
-from sklearn.model_selection import train_test_split
 from xgboost import XGBClassifier
-from data_prep import get_base_feature_cols, get_graph_feature_cols, load_dataset_with_graph_features
+from data_prep import (
+    get_base_feature_cols,
+    get_graph_feature_cols,
+    get_train_test_indices,
+    load_dataset_with_graph_features,
+)
 
 RANDOM_STATE = 42
-TEST_SIZE = 0.2
 
 BASELINE_MODEL_PATH = "models/xgboost_baseline_model.pkl"
 BASELINE_FEATURE_COLS_PATH = "models/baseline_feature_columns.pkl"
@@ -48,7 +51,7 @@ y = df["is_fraud"]
 X_base, X_with_graph = df[base_feature_cols], df[all_feature_cols]
 
 # Split on the index once so both feature sets use identical train/test rows.
-train_idx, test_idx = train_test_split(df.index, test_size=TEST_SIZE, random_state=RANDOM_STATE, stratify=y)
+train_idx, test_idx = get_train_test_indices(df)
 y_train, y_test = y.loc[train_idx], y.loc[test_idx]
 
 pr_base, roc_base, xgb_baseline = train_and_evaluate(
