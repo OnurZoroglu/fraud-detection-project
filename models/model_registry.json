@@ -23,7 +23,7 @@
         "pr_auc": 0.876,
         "roc_auc": 0.975
       },
-      "notes": "Balanced via scale_pos_weight, base feature set (amount, SQL features, V1-V28)."
+      "notes": "Balanced via scale_pos_weight, base feature set (amount, SQL features, V1-V28). Served with alert threshold 0.015, cost-optimal (100:1 FN:FP) on out-of-fold predictions from 5-fold CV on the training split; see cost_analysis.py."
     },
     {
       "version": "3.0.0",
