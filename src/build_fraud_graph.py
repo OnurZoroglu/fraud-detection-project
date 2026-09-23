@@ -12,6 +12,7 @@ import pandas as pd
 
 DATA_PATH = "data/features_with_graph_ids.csv"
 OUTPUT_PATH = "data/graph_features.csv"
+LOUVAIN_SEED = 42  # Louvain is randomized; fix the seed so the partition is reproducible
 
 
 def build_graph(df: pd.DataFrame) -> nx.Graph:
@@ -38,30 +39,34 @@ def compute_card_centrality(graph: nx.Graph) -> pd.DataFrame:
 
 def detect_communities(graph: nx.Graph) -> pd.DataFrame:
     """Assign each node to a community via the Louvain algorithm."""
-    partition = community_louvain.best_partition(graph)
+    partition = community_louvain.best_partition(graph, random_state=LOUVAIN_SEED)
     return pd.DataFrame([{"node": node, "community": comm_id} for node, comm_id in partition.items()])
 
 
-df = pd.read_csv(DATA_PATH)
-graph = build_graph(df)
-print(f"Graph built: {graph.number_of_nodes()} nodes, {graph.number_of_edges()} edges")
+# Only run the pipeline when executed directly: verify_ring_detection.py and
+# visualize_graph.py import helpers from this module and must not rewrite
+# data/graph_features.csv as a side effect.
+if __name__ == "__main__":
+    df = pd.read_csv(DATA_PATH)
+    graph = build_graph(df)
+    print(f"Graph built: {graph.number_of_nodes()} nodes, {graph.number_of_edges()} edges")
 
-card_centrality = compute_card_centrality(graph)
-print("\nTop 10 cards by degree centrality:")
-print(card_centrality.sort_values("degree_centrality", ascending=False).head(10))
+    card_centrality = compute_card_centrality(graph)
+    print("\nTop 10 cards by degree centrality:")
+    print(card_centrality.sort_values("degree_centrality", ascending=False).head(10))
 
-community_df = detect_communities(graph)
-community_sizes = community_df["community"].value_counts()
-print(f"\nTotal communities: {len(community_sizes)}")
-print("Smallest 10 communities (small, tightly-connected clusters can indicate fraud rings):")
-print(community_sizes.tail(10))
+    community_df = detect_communities(graph)
+    community_sizes = community_df["community"].value_counts()
+    print(f"\nTotal communities: {len(community_sizes)}")
+    print("Smallest 10 communities (small, tightly-connected clusters can indicate fraud rings):")
+    print(community_sizes.tail(10))
 
-card_community = community_df[community_df["node"].str.startswith("card_")].copy()
-card_community["card_id"] = card_community["node"].str.removeprefix("card_").astype(int)
-card_community = card_community[["card_id", "community"]]
+    card_community = community_df[community_df["node"].str.startswith("card_")].copy()
+    card_community["card_id"] = card_community["node"].str.removeprefix("card_").astype(int)
+    card_community = card_community[["card_id", "community"]]
 
-graph_features = card_centrality.merge(card_community, on="card_id", how="left")
-graph_features["community_size"] = graph_features["community"].map(community_sizes.to_dict())
+    graph_features = card_centrality.merge(card_community, on="card_id", how="left")
+    graph_features["community_size"] = graph_features["community"].map(community_sizes.to_dict())
 
-graph_features.to_csv(OUTPUT_PATH, index=False)
-print(f"\nGraph features saved to {OUTPUT_PATH}")
+    graph_features.to_csv(OUTPUT_PATH, index=False)
+    print(f"\nGraph features saved to {OUTPUT_PATH}")

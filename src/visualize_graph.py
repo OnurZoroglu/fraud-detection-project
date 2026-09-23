@@ -45,7 +45,15 @@ def build_display_subgraph(graph: nx.Graph, df: pd.DataFrame) -> nx.Graph:
     for card in normal_cards:
         normal_merchants.update(graph.neighbors(card))
 
-    subgraph = graph.subgraph(ring_nodes + normal_cards + list(normal_merchants)).copy()
+    # Build the subgraph with an explicit node/edge order. Set iteration order depends on
+    # per-process string hashing (and graph.subgraph() keeps its nodes in a set), which
+    # would otherwise change the spring layout on every run.
+    keep = ring_nodes + normal_cards + sorted(normal_merchants)
+    subgraph = nx.Graph()
+    subgraph.add_nodes_from((node, graph.nodes[node]) for node in keep)
+    subgraph.add_edges_from(sorted(
+        (min(u, v), max(u, v), data) for u, v, data in graph.subgraph(keep).edges(data=True)
+    ))
     subgraph.remove_nodes_from(list(nx.isolates(subgraph)))
     return subgraph
 
