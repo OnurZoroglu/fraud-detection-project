@@ -11,6 +11,9 @@ workflow, and an interactive dashboard.
 Several design decisions reflect that scope explicitly — see
 [Limitations & Future Work](#limitations--future-work).
 
+All results below were updated after a data-joining bug was found and
+fixed; see [Data Alignment Fix](#data-alignment-fix) for what changed.
+
 ## Contents
 
 - [Dataset](#dataset)
@@ -21,6 +24,7 @@ Several design decisions reflect that scope explicitly — see
 - [Model Comparison Summary](#model-comparison-summary)
 - [API & Dashboard](#api--dashboard)
 - [Model Versioning](#model-versioning)
+- [Data Alignment Fix](#data-alignment-fix)
 - [Limitations & Future Work](#limitations--future-work)
 
 ## Dataset
@@ -55,11 +59,13 @@ fraud-detection-project/
 │   ├── populate_logs.py                # sends sample traffic to the API
 │   ├── drift_monitor.py                # Z-score drift check on prediction logs
 │   └── dashboard.py                    # Streamlit demo
-├── data/                                # generated CSVs and plots (gitignored)
-├── models/                              # trained model artifacts (gitignored)
+├── data/                                # generated CSVs (gitignored) and plots (tracked)
+├── models/                              # trained models (gitignored); model_registry.json (tracked)
 ├── logs/                                # prediction logs (gitignored)
 ├── n8n/
 │   └── fraud_alert_workflow.json       # importable n8n alert workflow
+├── tests/
+│   └── test_data_alignment.py          # feature / PCA join alignment checks
 ├── requirements.txt
 ├── docker-compose.yml
 └── .gitignore
@@ -113,7 +119,18 @@ The scripts have dependencies on each other's output; run them in this order:
 ```
 
 All scripts must live in the same directory (`src/`) since several import
-from `data_prep.py` and `build_fraud_graph.py`.
+from `data_prep.py` and `build_fraud_graph.py`. Run them from the project
+root (e.g. `python src/train_baseline.py`), since file paths are relative
+to it.
+
+**Alignment tests:** after step 2 (and whenever the loaders change), run
+
+```bash
+python -m unittest discover -s tests
+```
+
+to confirm every row's SQL features and PCA components come from the same
+raw transaction (see [Data Alignment Fix](#data-alignment-fix)).
 
 ## Methodology & Results
 
@@ -137,19 +154,30 @@ instead.
 
 | Model | ROC-AUC | PR-AUC | Precision | Recall |
 |---|---|---|---|---|
-| Logistic Regression | 0.837 | 0.266 | 0.01 | 0.64 |
-| XGBoost | 0.830 | 0.501 | 0.49 | 0.52 |
+| Logistic Regression | 0.972 | 0.720 | 0.06 | 0.90 |
+| XGBoost | 0.975 | 0.876 | 0.90 | 0.83 |
 
-XGBoost roughly doubles Logistic Regression's PR-AUC. Feature scaling was
-tested and made no meaningful difference to Logistic Regression's score
-(0.265 → 0.266), indicating the fraud patterns in this dataset are not
-linearly separable — which is why the tree-based model performs better.
+*(Precision and recall at the default 0.5 threshold; test split, 98 fraud
+cases.)* The two models have almost the same ROC-AUC, but ROC-AUC is
+dominated by the ~57,000 legitimate transactions and hides the difference
+that matters here: XGBoost's PR-AUC is 0.16 higher, and at the default
+threshold Logistic Regression catches more fraud (recall 0.90) only by
+raising roughly 16 false alarms per caught fraud (precision 0.06), versus
+about one false alarm per nine caught frauds for XGBoost. A linear model on standardized features
+already ranks most fraud highly, so the tree model's advantage is
+precision rather than raw separability.
 
-**Precision-recall threshold analysis:** recall stays roughly flat
-(~50–55%) across thresholds from 0.05 to 0.55, meaning threshold tuning
-alone cannot substantially raise recall — a fixed subset of fraud cases
-is simply not distinguishable by this feature set. This motivated the
-anomaly-detection experiment below.
+**Precision-recall threshold analysis:** XGBoost's recall moves only
+slightly with the threshold — 0.83 at 0.5, 0.85 at 0.1, 0.88 at 0.01 —
+while precision drops steeply (0.90 → 0.80 → 0.58). Lowering the threshold
+buys a few additional fraud cases at a large false-alarm cost, and about
+10% of test-set fraud stays below even very low thresholds.
+
+The anomaly-detection experiment below was originally motivated by an
+apparent recall ceiling of ~50–55% seen on misaligned data (see
+[Data Alignment Fix](#data-alignment-fix)). That ceiling turned out to be
+an artifact, but a smaller group of fraud cases the supervised model
+cannot catch remains, so the question the experiment asks still applies.
 
 ![Precision-recall vs. threshold](data/threshold_analysis.png)
 
@@ -157,33 +185,73 @@ anomaly-detection experiment below.
 
 The default 0.5 threshold ignores the fact that missing a fraud case and
 raising a false alarm carry very different costs. Using illustrative
-assumed costs (missed fraud: $500, false-alarm review: $5), total cost was
-computed across all thresholds:
+assumed costs (missed fraud: $500, false-alarm review: $5), the threshold
+is chosen to minimize total cost **without looking at the test split**:
 
-| Threshold | Total Cost |
-|---|---|
-| Optimal (0.10) | $23,510 |
-| Default (0.50) | $23,765 |
+1. 5-fold stratified cross-validation on the training split (394 fraud
+   cases) produces out-of-fold (OOF) probabilities from the same model
+   configuration that is served.
+2. Every threshold from 0.001 to 0.999 (step 0.001) is scored on those OOF
+   predictions, and the cheapest one is selected: **0.015**.
+3. The served model is evaluated at that threshold once on the held-out
+   test split:
 
-The optimal threshold saves only ~$255 (~1%) over the default — a small
-gain that reflects the same recall ceiling noted above: the constraint is
-the model's discriminative capacity, not threshold placement. *(Cost
-figures are illustrative; a real deployment would derive them from
-finance/risk data.)*
+| Threshold | Total Cost | Recall | Precision | Alerts (of 56,962) |
+|---|---|---|---|---|
+| OOF-selected (0.015) | $6,750 | 0.867 | 0.630 | 135 |
+| Default (0.50) | $8,545 | 0.827 | 0.900 | 90 |
 
-![Total cost vs. threshold](data/cost_analysis.png)
+The selected threshold saves ~$1,795 (~21%) over the default on the test
+split: 4 more fraud cases caught for 41 extra false-alarm reviews. The API
+uses it (`ALERT_THRESHOLD = 0.015`). *(Cost figures are illustrative; a
+real deployment would derive them from finance/risk data.)*
+
+**How stable is it?** Not very, at the assumed 100:1 ratio. Selected fold
+by fold, the optimum is 0.001, 0.015, 0.001, 0.016 and 0.022; two of the
+five folds land on the lower edge of the search grid. The OOF cost curve
+is flat at the low end, staying within 5% of its minimum anywhere from
+0.001 to 0.016, so in that range the choice barely changes the expected
+cost while it changes the alert volume a lot. 0.015 is simply the minimum
+the OOF analysis found; it was not picked by looking at alert counts. It
+happens to sit at the upper end of the flat region, which also keeps the
+number of alerts lower than thresholds further down would.
+
+An earlier version of this analysis picked the threshold on the test split
+itself (0.002, reported cost $5,480). Because the threshold and the
+reported cost came from the same data, that figure was optimistic; at
+0.002 the model also raises twice as many alerts (285) at half the
+precision (0.31).
+
+**Sensitivity to the assumed cost ratio** (false-alarm cost fixed at $5;
+threshold selected on OOF predictions, then evaluated once on the test
+split):
+
+| FN:FP cost | Missed-fraud cost | OOF-selected threshold | Per-fold optima | Test recall | Test precision | Test alerts | Test cost | Test cost at 0.5 |
+|---|---|---|---|---|---|---|---|---|
+| 100:1 (used) | $500 | 0.015 | 0.001\*, 0.015, 0.001\*, 0.016, 0.022 | 0.867 | 0.630 | 135 | $6,750 | $8,545 |
+| 50:1 | $250 | 0.015 | 0.005, 0.015, 0.002, 0.016, 0.022 | 0.867 | 0.630 | 135 | $3,500 | $4,295 |
+| 20:1 | $100 | 0.015 | 0.034, 0.015, 0.016, 0.016, 0.022 | 0.867 | 0.630 | 135 | $1,550 | $1,745 |
+
+\*lower edge of the search grid
+
+All three ratios select the same threshold on the pooled OOF predictions.
+The per-fold optima spread less as missed fraud gets cheaper: at 20:1 none
+of them is on the grid edge.
+
+![Total cost vs. threshold (out-of-fold, log scale)](data/cost_analysis.png)
 
 ### 4. Imbalanced Data: SMOTE vs. Class Weighting
 
 | Approach | PR-AUC | Precision | Recall |
 |---|---|---|---|
-| Class Weighting | 0.501 | 0.49 | 0.52 |
-| SMOTE | 0.482 | 0.27 | 0.51 |
+| Class Weighting | 0.876 | 0.90 | 0.83 |
+| SMOTE | 0.870 | 0.81 | 0.86 |
 
-SMOTE achieves similar recall but at a substantial precision cost, likely
-because synthetic samples generated in a 32-dimensional space don't fully
-capture the minority class's true distribution. Class weighting was used
-going forward.
+The two approaches end up close: SMOTE trades some precision (0.81 vs.
+0.90) for slightly higher recall at the default threshold, with a
+marginally lower PR-AUC. Class weighting was used going forward, since it
+performs about as well as SMOTE without adding ~227,000 synthetic
+training rows.
 
 ### 5. Cross-Validation
 
@@ -193,32 +261,43 @@ fold) gives:
 
 | Metric | Mean | Std Dev |
 |---|---|---|
-| PR-AUC | 0.450 | ± 0.026 |
-| ROC-AUC | 0.834 | ± 0.026 |
+| PR-AUC | 0.855 | ± 0.027 |
+| ROC-AUC | 0.976 | ± 0.008 |
 
-The low standard deviation indicates the single-split PR-AUC of 0.501 was
-somewhat optimistic; the realistic expected range is ≈0.42–0.49.
+The single-split PR-AUC of 0.876 sits at the upper end of the
+cross-validated range, so it is slightly optimistic; the realistic
+expected range is ≈0.83–0.88.
 
 ### 6. Model Interpretability: SHAP
 
 | Rank | Feature | Mean \|SHAP\| |
 |---|---|---|
-| 1 | amount | 1.029 |
-| 2 | time_since_last_txn* | 0.929 |
-| 3 | v12 | 0.701 |
-| 4 | v4 | 0.488 |
-| 5 | v14 | 0.419 |
-| 6 | txn_count_last_hour* | 0.393 |
-| 7 | v13 | 0.392 |
-| 8 | v11 | 0.386 |
-| 9 | v19 | 0.381 |
-| 10 | avg_amount_last_hour* | 0.375 |
+| 1 | v14 | 2.889 |
+| 2 | v4 | 1.823 |
+| 3 | v12 | 1.047 |
+| 4 | v10 | 0.914 |
+| 5 | v11 | 0.720 |
+| 6 | v3 | 0.464 |
+| 7 | v16 | 0.432 |
+| 8 | v7 | 0.410 |
+| 9 | v8 | 0.390 |
+| 10 | amount | 0.383 |
 
-*SQL-derived features. All three SQL-engineered features rank in the top
-10, with `time_since_last_txn` the second most influential feature overall
-— concrete evidence that the SQL feature engineering step materially
-improved the model. (The V-columns' SHAP directionality isn't
-business-interpretable, since they're anonymized PCA components.)
+The model relies mainly on the PCA components. The SQL-derived features
+contribute, but modestly: `avg_amount_last_hour` ranks 14th (0.346),
+`txn_count_last_hour` 19th (0.298) and `time_since_last_txn` last of 32
+(0.100). (The V-columns' SHAP directionality isn't business-interpretable,
+since they're anonymized PCA components.)
+
+An earlier version of this analysis, run on misaligned data (see
+[Data Alignment Fix](#data-alignment-fix)), ranked all three SQL features
+in the top 10 and `time_since_last_txn` second, and was presented as
+evidence that the SQL step materially improved the model. That conclusion
+does not hold on correctly joined data. One plausible explanation, not
+verified: the misalignment only affected transactions sharing a timestamp
+with another one, and `time_since_last_txn = 0` marks most of those rows,
+so the feature may have helped the model discount unreliable PCA values
+rather than capturing fraud behavior.
 
 ![SHAP summary plot](data/shap_summary.png)
 
@@ -229,15 +308,18 @@ unsupervised alternative, using reconstruction error as an anomaly score.
 
 | Metric | Value |
 |---|---|
-| ROC-AUC | 0.789 |
-| PR-AUC | 0.140 |
+| ROC-AUC | 0.952 |
+| PR-AUC | 0.481 |
 
-This substantially underperforms XGBoost (PR-AUC 0.501). Strengthening the
-architecture (batch norm, dropout, L1 regularization, early stopping,
-learning-rate scheduling) did not meaningfully change the result —
-confirming the gap is due to the approach, not model capacity. Fraud
-patterns here are learnable, specific signals (per the SHAP analysis), not
-random anomalies, which favors supervised learning. Autoencoders may still
+The autoencoder separates fraud from normal traffic reasonably well
+(ROC-AUC 0.952) but its PR-AUC is far below XGBoost's 0.876, which
+suggests its highest reconstruction errors include many unusual but
+legitimate transactions alongside the fraud. Strengthening the architecture
+(batch norm, dropout, L1 regularization, early stopping, learning-rate
+scheduling) did not meaningfully change the result in the original
+experiments; this was not re-tested after the data fix. Fraud patterns
+here are learnable, specific signals (a handful of PCA components dominate
+the SHAP ranking), which favors supervised learning. Autoencoders may still
 add value for detecting genuinely novel, previously unseen fraud types not
 covered by labeled training data.
 
@@ -270,15 +352,19 @@ Adding `degree_centrality` and `community_size` to XGBoost:
 
 | Metric | Baseline | With Graph Features | Delta |
 |---|---|---|---|
-| PR-AUC | 0.501 | 0.795 | +0.294 |
-| ROC-AUC | 0.830 | 0.935 | +0.105 |
+| PR-AUC | 0.876 | 0.928 | +0.053 |
+| ROC-AUC | 0.975 | 0.987 | +0.012 |
+
+The gain is much smaller than the +0.294 reported before the data fix: a
+stronger base model leaves less room for the graph features to add.
 
 **Methodological caveat:** most of this gain reflects the simulation
 design — the ring was deliberately small and isolated, making
 `community_size` an almost direct fraud signal. Real fraud rings likely
 overlap more with normal traffic, so real-world gains would probably be
-more modest. Still, this demonstrates that relational information can add
-real value beyond transaction-level features.
+more modest. The result shows that the pipeline can turn relational
+structure into model features, not how much such features would help on
+real data.
 
 ### 10. Ensemble: XGBoost + Autoencoder
 
@@ -287,13 +373,19 @@ weighted average (rescaled to [0, 1] first):
 
 | Approach | ROC-AUC | PR-AUC |
 |---|---|---|
-| XGBoost only | 0.935 | 0.795 |
-| Autoencoder only | 0.798 | 0.157 |
-| Ensemble (85% XGBoost + 15% AE) | 0.939 | 0.794 |
+| XGBoost only | 0.987 | 0.928 |
+| Autoencoder only | 0.933 | 0.377 |
+| Ensemble (85% XGBoost + 15% AE) | 0.980 | 0.919 |
+
+*(The "Autoencoder only" row differs from section 7's 0.481 because
+`ensemble_model.py` trains its own, simpler autoencoder on the same inputs
+and split: 16-8-16 ReLU layers without batch norm, dropout or L1, for a
+fixed 30 epochs without early stopping. Neither script seeds TensorFlow,
+so autoencoder scores also vary slightly between runs.)*
 
 The ensemble does not improve PR-AUC. A complementarity check — counting
 fraud cases XGBoost ranked in its bottom half but the autoencoder ranked
-in its top decile — found only **2 out of 98** missed-fraud cases where the
+in its top decile — found **0 out of 98** fraud cases where the
 autoencoder offered a genuinely different signal. A full sweep of ensemble
 weights (XGBoost weight from 0.0 to 1.0) confirmed PR-AUC increases
 monotonically with XGBoost's weight, peaking at pure XGBoost. **Conclusion:**
@@ -310,22 +402,26 @@ demonstrate end-to-end scoring behavior.
 
 **Methodological issue found and fixed:** the first version sampled fraud
 transactions from the *entire* dataset (train + test combined), which
-leaked training examples into the simulation and produced an artificially
-perfect result (447/492 correctly caught, 90.8% recall) — far above the
-model's true 52% recall. After restricting the sample to the test split
-only:
+leaked training examples into the simulation. At the time (before the
+data alignment fix) it reported 90.8% recall against a true test-set
+recall of 52%. The stream now draws only from the test split: every one
+of its 98 fraud cases plus 50 random legitimate transactions, scored at
+the API's alert threshold (0.015):
 
 | Metric | Value |
 |---|---|
 | Total transactions | 148 |
-| True positives | 53 / 98 |
-| **Recall** | **54.1%** |
+| True positives | 85 / 98 |
+| **Recall** | **86.7%** |
 | False positives | 0 / 50 |
 | Precision (this sample) | 100% |
 
-54.1% recall is consistent with the model's true test-set recall (52%),
-confirming the corrected simulation reflects genuine generalization
-performance rather than memorization.
+Because the stream contains every test-set fraud case, its recall equals
+the model's test-set recall at this threshold by construction. The 100%
+precision is a small-sample effect: at 0.015 the model raises a false
+alarm on about 0.09% of legitimate transactions (50 of 56,864; precision
+0.63 on the full test split), so 50 legitimate transactions are expected
+to produce well under one.
 
 ### 12. FastAPI Service & Drift Monitoring
 
@@ -338,30 +434,38 @@ Z-score is kept as a simple secondary check.
 **Methodological issue found and fixed:** an initial drift check using
 only 9 manually-entered log records was skewed by a single outlier
 ($20,000 test transaction), producing a false drift alarm (Z-score: 17.88).
-After clearing manual test entries and populating the log with 900+
-transactions sampled from real test data via an automated script:
+After clearing manual test entries and populating the log with 1,200
+transactions sampled from the held-out test split via `populate_logs.py`
+(four runs of 300, API started with `N8N_ALERTS_ENABLED=false` so the
+traffic doesn't trigger n8n alerts):
 
 | Metric | Value |
 |---|---|
-| Total records | 1,201 |
-| Mean amount | $81.07 |
-| Mean fraud probability | 0.0037 |
-| Alert rate | 0.33% |
-| PSI | 0.0221 (no significant shift, threshold 0.1) |
-| Z-score (secondary) | -0.03 |
+| Total records | 1,200 (1,191 distinct transactions) |
+| Mean amount | $92.99 (reference: $88.35) |
+| Mean fraud probability | 0.00004 |
+| Alert rate | 0.08% (1 alert; threshold 0.015) |
+| PSI | 0.0109 (no significant shift, threshold 0.1) |
+| Z-score (secondary) | 0.02 |
 | Result | No drift detected |
+
+This particular sample happens to contain no real fraud (about two were
+expected at the dataset's 0.17% fraud rate), so the single alert is a
+false alarm and the mean fraud probability is very low. The sample was
+kept as drawn rather than re-drawn to look more typical; for reference,
+the whole test split produces 135 alerts on 56,962 transactions (0.24%)
+at this threshold.
 
 This is a single-variable, Gaussian-assumption-free (PSI) check with a
 simple Z-score as backup — see [Limitations](#limitations--future-work)
 for further discussion.
 
-*Transparency note:* `populate_logs.py` initially used a fixed random seed,
-so repeated runs resent largely the same 253 unique transactions rather
-than sampling new ones — of the 1,201 total log records, only 253 were
-distinct. This didn't invalidate the drift conclusion (the underlying
-distribution sampled was still representative), but it did mean the
-"sample size" was smaller than the record count suggested. The script has
-since been fixed to sample without a fixed seed on each run.
+*Transparency note:* earlier versions of `populate_logs.py` used a fixed
+random seed (so the previous 1,201-record log held only 253 distinct
+transactions) and sampled from the full dataset, about 80% of which is
+training data. Both are fixed: the script now samples the test split
+without a fixed seed, and the log was regenerated with the retrained
+model after the [data alignment fix](#data-alignment-fix).
 
 ### 13. Real-Time Alerting with n8n
 
@@ -377,22 +481,22 @@ flowchart LR
     D -->|false| F[No operation]
 ```
 
-After each prediction, `/predict` sends `transaction_id`, `amount`, `fraud_probability` and `is_fraud_alert` to the URL in `N8N_WEBHOOK_URL`. The call runs in FastAPI `BackgroundTasks`, so the API response is not delayed (35–97 ms in local tests).
+After each prediction, `/predict` sends `transaction_id`, `amount`, `fraud_probability` and `is_fraud_alert` to the URL in `N8N_WEBHOOK_URL`. The call runs in FastAPI `BackgroundTasks`, so the API response is not delayed (35–98 ms across local test runs). Setting `N8N_ALERTS_ENABLED=false` turns the webhook off without touching the URL (used when generating test traffic).
 
 **Design decisions**
 
-- **Single source of truth for the threshold.** The alert threshold lives only in the API (`ALERT_THRESHOLD = 0.10`, taken from the cost-sensitive analysis in section 3). n8n does not apply its own cutoff; it only routes on the API's `is_fraud_alert` decision. An earlier version used a separate 0.5 cutoff in n8n, which meant transactions the API flagged between 0.10 and 0.5 never reached Telegram.
-- **Alerting never breaks scoring.** If n8n is unreachable, `/predict` still returns 200 and the failure is logged as a warning. If `N8N_WEBHOOK_URL` is unset, no webhook call is made at all.
+- **Single source of truth for the threshold.** The alert threshold lives only in the API (`ALERT_THRESHOLD = 0.015`, taken from the cost-sensitive analysis in section 3). n8n does not apply its own cutoff; it only routes on the API's `is_fraud_alert` decision. An earlier version used a separate 0.5 cutoff in n8n, which meant transactions the API flagged below 0.5 never reached Telegram.
+- **Alerting never breaks scoring.** If n8n is unreachable, `/predict` still returns 200 and the failure is logged as a warning. If `N8N_WEBHOOK_URL` is unset or `N8N_ALERTS_ENABLED=false`, no webhook call is made at all.
 - **Missing data fails loudly.** n8n's IF node uses a strict boolean check, so a payload without `is_fraud_alert` raises a type error instead of being silently treated as non-fraud.
 
-**End-to-end test results** (real rows from the test split, unseen during training; split rebuilt with the same `train_test_split(..., test_size=0.2, random_state=42, stratify=y)` as `train_with_graph_features.py`)
+**End-to-end test results** (real rows from the test split, unseen during training; split from `data_prep.get_train_test_indices`, the same one the served model was trained on)
 
 | Transaction | Probability | `is_fraud_alert` | Route |
 | --- | --- | --- | --- |
-| Fraud row | 0.999 | true | Telegram alert |
-| Legitimate row, mid-range score | 0.29 | true | Telegram alert (missed under the old 0.5 cutoff) |
-| Legitimate row | 0.0005 | false | No operation |
-| Fraud row above, n8n stopped | 0.999 | true | API returned 200, warning logged |
+| Fraud row | 0.9999 | true | Telegram alert |
+| Legitimate row, above the alert threshold | 0.2082 | true | Telegram alert (missed under the old 0.5 cutoff) |
+| Legitimate row | 0.0000 | false | No operation |
+| Fraud row above, n8n stopped | 0.9999 | true | API returned 200, warning logged |
 
 Test predictions were removed from `logs/prediction_log.jsonl` afterwards so they would not affect drift monitoring (see the note on manual test entries in section 12).
 
@@ -414,12 +518,12 @@ Test predictions were removed from `logs/prediction_log.jsonl` afterwards so the
 
 | Approach | PR-AUC | ROC-AUC | Notes |
 |---|---|---|---|
-| Logistic Regression | 0.266 | 0.837 | Linear, weak baseline |
-| XGBoost (base features) | 0.501 | 0.830 | Strong supervised baseline |
-| XGBoost + SMOTE | 0.482 | 0.848 | Weaker than class weighting |
-| Autoencoder (unsupervised) | 0.140 | 0.789 | Anomaly-based, underperforms |
-| XGBoost + graph features | 0.795 | 0.935 | Best single model; not served live (see below) |
-| Ensemble (XGBoost + AE) | 0.794 | 0.939 | Autoencoder adds no measurable value |
+| Logistic Regression | 0.720 | 0.972 | Linear baseline; high recall but very low precision at 0.5 |
+| XGBoost (base features) | 0.876 | 0.975 | Served model (2.0.0) |
+| XGBoost + SMOTE | 0.870 | 0.977 | No gain over class weighting |
+| Autoencoder (unsupervised) | 0.481 | 0.952 | Anomaly-based, well below supervised |
+| XGBoost + graph features | 0.928 | 0.987 | Best single model; not served live (see below) |
+| Ensemble (XGBoost + AE) | 0.919 | 0.980 | Autoencoder adds no measurable value |
 
 ## API & Dashboard
 
@@ -444,10 +548,13 @@ trained model version, its metrics, and production status:
 
 | Version | Model | PR-AUC | In Production? |
 |---|---|---|---|
-| 1.0.0 | Logistic Regression | 0.266 | No (exploratory) |
-| **2.0.0** | **XGBoost Baseline** | **0.501** | **Yes (active)** |
-| 3.0.0 | XGBoost + Graph Features | 0.795 | No |
-| 3.1.0-experimental | Ensemble | 0.794 | No |
+| 1.0.0 | Logistic Regression | 0.720 | No (exploratory) |
+| **2.0.0** | **XGBoost Baseline** | **0.876** | **Yes (active)** |
+| 3.0.0 | XGBoost + Graph Features | 0.928 | No |
+| 3.1.0-experimental | Ensemble | 0.919 | No |
+
+All versions were retrained on 2026-09-23 after the
+[data alignment fix](#data-alignment-fix); version numbers were kept.
 
 **Key architectural decision:** the highest-scoring model (3.0.0) is *not*
 served in production. Its graph features require recomputing the full
@@ -455,6 +562,62 @@ card-merchant network, which isn't practical per-request in a real-time
 API. The baseline (2.0.0), which only needs information available at
 transaction time, is served instead; the graph-augmented model is kept for
 offline/batch analysis (e.g. periodic fraud-ring scans).
+
+## Data Alignment Fix
+
+**How it was found.** While preparing real test-split transactions for the
+n8n end-to-end test (section 13), rebuilding the training split showed
+that the loaders attach the PCA components by timestamp rather than by
+transaction. A follow-up check found that in only ~45% of rows did the
+transaction amount match the raw row the PCA components came from.
+
+**The problem.** The SQL feature step (`features.csv`) keeps
+`transaction_id`, the 1-based row number assigned in `load_data.py`. The
+Python loaders, however, re-attached the PCA components `v1`–`v28` from
+`creditcard.csv` by joining on `time_seconds` and then dropping
+duplicates. Timestamps are not unique (239,644 raw rows share theirs with
+another transaction), so each such row received the PCA components of
+whichever transaction with the same timestamp came first. Only 43.85% of
+rows had their own PCA components, and 462 rows had components from a
+transaction with a different label. Every model and analysis in this
+README was affected; the SQL features themselves were correct.
+
+**The fix.** `data_prep.py` now joins on `transaction_id` (one-to-one,
+validated) and checks every row's amount, timestamp and label against the
+raw transaction, failing loudly on any mismatch.
+`tests/test_data_alignment.py` asserts 100% alignment on the real data.
+The simulated card/merchant IDs, and therefore the graph features, are
+byte-identical before and after the fix.
+
+**Impact** (test split unless noted):
+
+| Metric | Before | After |
+|---|---|---|
+| Rows with their own PCA components | 43.85% | 100% |
+| Rows with PCA components from a different-label transaction | 462 | 0 |
+| XGBoost (served) PR-AUC / ROC-AUC | 0.501 / 0.830 | 0.876 / 0.975 |
+| Logistic Regression PR-AUC | 0.266 | 0.720 |
+| 5-fold CV PR-AUC | 0.450 ± 0.026 | 0.855 ± 0.027 |
+| XGBoost + graph features PR-AUC | 0.795 | 0.928 |
+| Gain from graph features (PR-AUC) | +0.294 | +0.053 |
+| Autoencoder PR-AUC | 0.140 | 0.481 |
+| Cost-optimal threshold / saving vs. 0.5 | 0.10 / ~1% (selected on test split) | 0.015 / ~21% (selected on OOF training predictions) |
+| Best-ranked SQL feature (SHAP) | 2nd | 14th |
+
+**Conclusions that changed:**
+
+- *"XGBoost roughly doubles Logistic Regression's PR-AUC"* (section 2):
+  now 0.876 vs. 0.720; the gap is mainly in precision.
+- *"Recall is stuck at ~50–55% across thresholds; a fixed subset of fraud
+  is not distinguishable"* (section 2): recall is now 83–88% for
+  thresholds from 0.5 down to 0.01; about 10% of test-set fraud remains hard to catch.
+- *"Threshold tuning barely matters"* (section 3): the cost-optimal
+  threshold now saves ~21% over the default.
+- *"The SQL features are among the most influential"* (section 6): they
+  now rank 14th, 19th and 32nd of 32.
+- The size of the graph-feature gain (section 9): +0.053 instead of +0.294.
+
+The ensemble and autoencoder conclusions still hold.
 
 ## Limitations & Future Work
 
@@ -474,6 +637,12 @@ this were to move toward production:
   billing addresses) rather than simulated identifiers -- something the
   original dataset doesn't support, since it has no such fields to begin
   with.
+- **Threshold stability:** the alert threshold (0.015) is selected on
+  out-of-fold training predictions, but at the assumed 100:1 cost ratio
+  the per-fold optima range from 0.001 to 0.022 and the cost curve is flat
+  at the low end (see section 3). The operating point therefore rests on
+  a few hundred fraud cases and on an illustrative cost ratio; with real
+  cost data it should be re-derived and monitored as fraud patterns shift.
 - **API performance:** `/predict` currently builds a single-row pandas
   DataFrame per request and runs synchronously. At meaningful production
   traffic, this would be worth revisiting (NumPy-based scoring, async I/O
