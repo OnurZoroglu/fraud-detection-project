@@ -652,6 +652,15 @@ this were to move toward production:
   constants rather than centralized in a config file. Reasonable at this
   project's scale; a larger codebase would benefit from a shared config
   module.
+- **Reproducibility of the graph and autoencoder results:** the current
+  `data/graph_features.csv` came from a Louvain run without a fixed seed.
+  `build_fraud_graph.py` now seeds Louvain (and no longer rewrites the file
+  when other scripts import it), but that seed was added afterwards, so
+  re-running it may produce a slightly different community partition and
+  slightly different metrics for the graph-based model (3.0.0) and the
+  ensemble. The autoencoder scripts (`autoencoder_fraud.py`,
+  `ensemble_model.py`) do not seed TensorFlow either, so their scores vary
+  slightly between runs.
 
 **Addressed during development** (kept here for transparency): database
 credentials were initially hardcoded with a real-looking default password;
